@@ -25,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://id.twitch.tv https://accounts.google.com https://www.googleapis.com https://api.twitch.tv https://api.elevenlabs.io http://localhost:3000 ws://localhost:3000 ws://localhost:8080"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://id.twitch.tv https://accounts.google.com https://www.googleapis.com https://api.twitch.tv https://api.elevenlabs.io https://mananjk.github.io http://localhost:3000 ws://localhost:3000 ws://localhost:8080"
     },
     "withGlobalTauri": true
   },
@@ -43,6 +43,12 @@
   "plugins": {
     "singleInstance": {
       "enabled": true
+    },
+    "updater": {
+      "active": true,
+      "endpoints": ["https://mananjk.github.io/StreamTTS/update.json"],
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU4RDQzNTE3NzMwMEYxNzkKUldSNThRQnpGelhVNkRkNStCdUVyUDJqZ3hBNk9KNnhXeWpCWW5lQi81SWtXVzQwVmFhcDFhOEcK"
     }
   }
 }

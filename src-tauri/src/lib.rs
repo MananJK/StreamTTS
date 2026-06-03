@@ -26,6 +26,7 @@ pub fn run() {
     
 tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -98,21 +99,6 @@ tauri::Builder::default()
             
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            open_oauth_url
-        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[tauri::command]
-async fn open_oauth_url(
-    url: String,
-) -> Result<(), String> {
-    log::info!("Opening OAuth URL in browser");
-    
-    open::that(&url)
-        .map_err(|e| format!("Failed to open URL: {}", e))?;
-    
-    Ok(())
 }
