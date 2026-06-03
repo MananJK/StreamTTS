@@ -146,17 +146,10 @@ export class AlertService {
     // Try to use a different voice for alerts
     const voices = speechSynthesis.getVoices();
     if (voices.length > 1) {
-      // Use a different voice than chat TTS if available
-      utterance.voice = voices.find(voice => 
-        voice.name !== (speechSynthesis.getVoices()[0]?.name)
-      ) || voices[1];
+      utterance.voice = voices[1];
     }
 
     speechSynthesis.speak(utterance);
-
-    // Also send to custom TTS system if available
-    if (window.speechSynthesis) {
-    }
 
     // Notify listeners
     this.listeners.forEach(listener => listener(alert));
