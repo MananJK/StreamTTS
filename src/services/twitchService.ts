@@ -158,6 +158,11 @@ const shouldReportError = (channelName: string, errorMessage: string): boolean =
   return true;
 };
 
+const getTwitchClient = (channelName: string): Client | undefined => twitchClients[channelName];
+const setTwitchClient = (channelName: string, client: Client): void => { twitchClients[channelName] = client; };
+const removeTwitchClient = (channelName: string): void => { delete twitchClients[channelName]; };
+const getConnectedChannels = (): string[] => Object.keys(twitchClients);
+
 export const connectToTwitchChat = (
   channelName: string,
   onMessageReceived: MessageCallback,
@@ -170,9 +175,9 @@ export const connectToTwitchChat = (
   }
 
   // Disconnect existing client for this channel if any
-  if (twitchClients[channelName]) {
-    twitchClients[channelName].disconnect();
-    delete twitchClients[channelName];
+  if (getTwitchClient(channelName)) {
+    getTwitchClient(channelName)!.disconnect();
+    removeTwitchClient(channelName);
   }
 
   try {
@@ -190,10 +195,7 @@ export const connectToTwitchChat = (
       },
       connection: {
         secure: true,
-        reconnect: true,
-        reconnectDecay: 1.5,
-        reconnectInterval: 2000,
-        maxReconnectAttempts: 5,
+        reconnect: false,
         timeout: 30000
       },
       identity: {
@@ -226,7 +228,7 @@ export const connectToTwitchChat = (
         onConnectionChanged(false, reason);
       }
       // Clean up the client reference
-      delete twitchClients[channelName];
+      removeTwitchClient(channelName);
     });
 
     // Handle connection errors
@@ -241,7 +243,7 @@ export const connectToTwitchChat = (
       }
       // Don't immediately clean up on ping timeouts - let the connection handler deal with it
       if (!error.message || !error.message.includes('ping timeout')) {
-        delete twitchClients[channelName];
+        removeTwitchClient(channelName);
       }
     });
 
@@ -252,7 +254,7 @@ export const connectToTwitchChat = (
     // Connect to Twitch with better error handling
     client.connect().then(() => {
       // Store the client for later reference only after successful connection initiation
-      twitchClients[channelName] = client;
+      setTwitchClient(channelName, client);
     }).catch(error => {
       console.error('Failed to connect to Twitch:', error);
       // Check if we've recently reported this same error to avoid duplicates
@@ -261,7 +263,7 @@ export const connectToTwitchChat = (
         onConnectionChanged(false, error.message);
       }
       // Don't store the client if connection failed
-      delete twitchClients[channelName];
+      removeTwitchClient(channelName);
     });
 
   } catch (error) {
@@ -278,27 +280,27 @@ export const connectToTwitchChat = (
 export const disconnectFromTwitchChat = (channelName?: string): Promise<void> => {
   return new Promise((resolve) => {
     try {
-      if (channelName && twitchClients[channelName]) {
+      if (channelName && getTwitchClient(channelName)) {
         
-        const client = twitchClients[channelName];
+        const client = getTwitchClient(channelName)!;
         
         // Set up timeout to prevent hanging
         const timeout = setTimeout(() => {
           console.warn(`Twitch disconnect timeout for ${channelName}, forcing cleanup`);
-          delete twitchClients[channelName];
+          removeTwitchClient(channelName);
           resolve();
         }, 3000); // Reduced timeout to 3 seconds
         
         // Handle disconnect events
         const onDisconnect = () => {
           clearTimeout(timeout);
-          delete twitchClients[channelName];
+          removeTwitchClient(channelName);
           resolve();
         };
         
         const onError = (error: any) => {
           clearTimeout(timeout);
-          delete twitchClients[channelName];
+          removeTwitchClient(channelName);
           console.error(`Error during Twitch disconnect for ${channelName}:`, error);
           resolve(); // Resolve anyway since we cleaned up
         };
@@ -315,20 +317,20 @@ export const disconnectFromTwitchChat = (channelName?: string): Promise<void> =>
         if (typeof client.disconnect === 'function') {
           client.disconnect().catch((error) => {
             clearTimeout(timeout);
-            delete twitchClients[channelName];
+            removeTwitchClient(channelName);
             console.error(`Disconnect promise rejected for ${channelName}:`, error);
             resolve(); // Resolve anyway since we cleaned up
           });
         } else {
           // If disconnect method is not available, force cleanup
           clearTimeout(timeout);
-          delete twitchClients[channelName];
+          removeTwitchClient(channelName);
           resolve();
         }
         
       } else if (!channelName) {
         // Disconnect all clients if no specific channel is provided
-        const channelNames = Object.keys(twitchClients);
+        const channelNames = getConnectedChannels();
         
         if (channelNames.length === 0) {
           resolve();
@@ -352,8 +354,8 @@ export const disconnectFromTwitchChat = (channelName?: string): Promise<void> =>
     } catch (error) {
       console.error('Error in disconnectFromTwitchChat:', error);
       // Clean up the client reference even if there was an error
-      if (channelName && twitchClients[channelName]) {
-        delete twitchClients[channelName];
+      if (channelName && getTwitchClient(channelName)) {
+        removeTwitchClient(channelName);
       }
       resolve(); // Resolve rather than reject to prevent hanging
     }
@@ -362,25 +364,23 @@ export const disconnectFromTwitchChat = (channelName?: string): Promise<void> =>
 
 export const isTwitchConnected = (channelName?: string): boolean => {
   if (channelName) {
-    return !!twitchClients[channelName];
+    return !!getTwitchClient(channelName);
   }
-  return Object.keys(twitchClients).length > 0;
+  return getConnectedChannels().length > 0;
 };
 
 export const disconnectAllTwitchClients = async (): Promise<void> => {
-  const channelNames = Object.keys(twitchClients);
+  const channelNames = getConnectedChannels();
   
   for (const channelName of channelNames) {
     try {
       await disconnectFromTwitchChat(channelName);
     } catch (error) {
       console.error(`Error disconnecting from ${channelName}:`, error);
-      delete twitchClients[channelName];
+      removeTwitchClient(channelName);
     }
   }
 };
-
-export { twitchClients };
 
 // Get current user's Twitch username from token
 export const getTwitchUsername = async (): Promise<string | null> => {
