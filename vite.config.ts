@@ -4,6 +4,11 @@ import path from "path";
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  test: {
+    globals: true,
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+  },
   server: {
     host: "::",
     port: 8080,
@@ -33,31 +38,20 @@ export default defineConfig({
           
           // UI Library chunks
           'radix-core': [
-            '@radix-ui/react-dialog',
             '@radix-ui/react-tooltip',
-            '@radix-ui/react-popover',
             '@radix-ui/react-slider',
             '@radix-ui/react-select',
-            '@radix-ui/react-switch'
-          ],
-          'radix-extended': [
-            '@radix-ui/react-accordion',
+            '@radix-ui/react-switch',
             '@radix-ui/react-tabs',
-            '@radix-ui/react-dropdown-menu',
-            '@radix-ui/react-navigation-menu'
           ],
           
           // Utility chunks
           'ui-utils': ['lucide-react', 'sonner', 'tailwind-merge', 'class-variance-authority'],
-          'form-utils': ['react-hook-form', '@hookform/resolvers', 'zod'],
+          'form-utils': ['zod'],
           'query-utils': ['@tanstack/react-query'],
-          'date-utils': ['date-fns', 'react-day-picker'],
           
           // Chat/Stream specific
           'stream-utils': ['tmi.js'],
-          
-          // Chart/Data visualization
-          'chart-utils': ['recharts', 'embla-carousel-react']
         },
         // Minimize chunk size and improve loading
         chunkFileNames: (chunkInfo) => {
