@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, lazy, Suspense, useCallback } from 'react';
+import { useEffect, lazy, Suspense, useCallback, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -15,57 +15,38 @@ const MessageInput = lazy(() => import('@/components/MessageInput'));
 const MessageHistory = lazy(() => import('@/components/MessageHistory'));
 const VolumeControl = lazy(() => import('@/components/VolumeControl'));
 const ApiKeyInput = lazy(() => import('@/components/ApiKeyInput'));
-const ChatConnections = lazy(() => import('@/components/ChatConnections').then(module => ({ default: module.default })));
+const ChatConnections = lazy(() => import('@/components/ChatConnections'));
 const ConnectionStatusPanel = lazy(() => import('@/components/ConnectionStatusPanel'));
 const AlertSettings = lazy(() => import('@/components/AlertSettings'));
 
 import { Message } from '@/types/message';
-import { ChatConnection } from '@/types/chatSource';
-import { playMessageAudio, TTSProvider, getAvailableBrowserVoices } from '@/services/ttsService';
-import { hasTwitchOAuthToken, connectToTwitchChat, disconnectFromTwitchChat } from '@/services/twitchService';
-import { hasYoutubeOAuthToken, connectToYouTubeLiveChat } from '@/services/youtubeService';
+import { getAvailableBrowserVoices } from '@/services/ttsService';
+import { useChatStore } from '@/stores/chatStore';
+import { useSettingsStore, TTSProvider } from '@/stores/settingsStore';
+import { useTtsQueue } from '@/hooks/useTtsQueue';
 
 const Index = () => {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [apiKey, setApiKey] = useState<string>('');
-  const [volume, setVolume] = useState<number>(0.7);
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<string>('chat');
-  const [chatConnections, setChatConnections] = useState<ChatConnection[]>([]);
-  const [ttsProvider, setTtsProvider] = useState<TTSProvider>('browser');
-  const [selectedVoice, setSelectedVoice] = useState<string>('');
-  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [isHowToUseOpen, setIsHowToUseOpen] = useState<boolean>(false);
   const { toast } = useToast();
-  const [isYoutubeAuthed, setIsYoutubeAuthed] = useState<boolean>(hasYoutubeOAuthToken());
-  const [youtubeConnections, setYoutubeConnections] = useState<Record<string, { disconnect: () => void }>>({});
+  const [isHowToUseOpen, setIsHowToUseOpen] = useState<boolean>(false);
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [ttsInitialized, setTtsInitialized] = useState<boolean>(false);
 
-  // Load API key, volume, and TTS provider from localStorage
-  useEffect(() => {
-    const savedApiKey = localStorage.getItem('elevenLabsApiKey');
-    if (savedApiKey) {
-      setApiKey(savedApiKey);
-    }
-    
-    const savedVolume = localStorage.getItem('ttsVolume');
-    if (savedVolume) {
-      setVolume(parseFloat(savedVolume));
-    }
-    
-    const savedProvider = localStorage.getItem('ttsProvider') as TTSProvider;
-    if (savedProvider) {
-      setTtsProvider(savedProvider);
-    }
-    
-    const savedVoice = localStorage.getItem('selectedVoice');
-    if (savedVoice) {
-      setSelectedVoice(savedVoice);
-    }
+  const messages = useChatStore(s => s.messages);
+  const activeTab = useChatStore(s => s.activeTab);
+  const isProcessing = useChatStore(s => s.isProcessing);
+  const addMessage = useChatStore(s => s.addMessage);
+  const setActiveTab = useChatStore(s => s.setActiveTab);
 
-    // Defer voice initialization until user interacts with audio features
-    // rather than loading at startup
-  }, []);
+  const apiKey = useSettingsStore(s => s.apiKey);
+  const volume = useSettingsStore(s => s.volume);
+  const ttsProvider = useSettingsStore(s => s.ttsProvider);
+  const selectedVoice = useSettingsStore(s => s.selectedVoice);
+  const setApiKey = useSettingsStore(s => s.setApiKey);
+  const setVolume = useSettingsStore(s => s.setVolume);
+  const setTtsProvider = useSettingsStore(s => s.setTtsProvider);
+  const setSelectedVoice = useSettingsStore(s => s.setSelectedVoice);
+
+  const { enqueue } = useTtsQueue();
 
   useEffect(() => {
     if (activeTab === 'chat' && !ttsInitialized) {
@@ -81,7 +62,6 @@ const Index = () => {
           
           if (pavelVoice) {
             setSelectedVoice(pavelVoice.name);
-            localStorage.setItem('selectedVoice', pavelVoice.name);
           } else {
             const russianVoice = voices.find(v => 
               v.lang.startsWith('ru') || 
@@ -91,7 +71,6 @@ const Index = () => {
             
             if (russianVoice) {
               setSelectedVoice(russianVoice.name);
-              localStorage.setItem('selectedVoice', russianVoice.name);
             }
           }
         }
@@ -115,43 +94,24 @@ const Index = () => {
         }
       }
     }
-  }, [activeTab, ttsInitialized, selectedVoice]);
-
-  // Set up message handler for chat messages - only when active tab is connections
-  const handleExternalMessage = useRef((username: string, content: string) => {
-    // Check if the message is in Russian or starts with !г
-    const hasCyrillic = /[\u0400-\u04FF]/.test(content);
-    const isCommand = content.startsWith('!г ');
-    
-    if (hasCyrillic || isCommand) {
-      const formattedContent = isCommand ? content : `!г ${content}`;
-      handleSendMessage(formattedContent, username);
-    }
-  });
-
-  // NOTE: Connection establishment is now handled in ChatConnections.tsx
-  // This avoids the reconnection issue that was caused by this useEffect
-  // running every time chatConnections array changed and calling connect functions again
+  }, [activeTab, ttsInitialized, selectedVoice, setSelectedVoice]);
 
   const handleApiKeySubmit = useCallback((key: string) => {
     setApiKey(key);
-    localStorage.setItem('elevenLabsApiKey', key);
     toast({
       id: 'api-key-saved',
       title: "API Key Saved",
       description: "Your ElevenLabs API key has been saved"
     });
-  }, [toast]);
+  }, [setApiKey, toast]);
 
   const handleVolumeChange = useCallback((value: number) => {
     setVolume(value);
-    localStorage.setItem('ttsVolume', value.toString());
-  }, []);
+  }, [setVolume]);
 
   const handleProviderChange = useCallback((checked: boolean) => {
     const newProvider: TTSProvider = checked ? 'elevenlabs' : 'browser';
     setTtsProvider(newProvider);
-    localStorage.setItem('ttsProvider', newProvider);
     
     toast({
       id: 'tts-provider-changed',
@@ -160,84 +120,11 @@ const Index = () => {
         ? "Using ElevenLabs for TTS (requires API key)" 
         : "Using browser's built-in TTS (unlimited usage)"
     });
-  }, [toast]);
+  }, [setTtsProvider, toast]);
 
   const handleVoiceChange = useCallback((voice: string) => {
     setSelectedVoice(voice);
-    localStorage.setItem('selectedVoice', voice);
-  }, []);
-
-  // Process message queue
-  const processMessageQueue = async (newMessage: Message) => {
-    if (ttsProvider === 'elevenlabs' && !apiKey) {
-      toast({
-        title: "API Key Required",
-        description: "Please set your ElevenLabs API key in the settings tab",
-        variant: "destructive"
-      });
-      
-      // Update message status to error
-      setMessages(currentMessages => 
-        currentMessages.map(msg => 
-          msg.id === newMessage.id ? { ...msg, status: 'error' } : msg
-        )
-      );
-      
-      // Switch to settings tab
-      setActiveTab('settings');
-      return;
-    }
-
-    if (isProcessing) return;
-    
-    try {
-      setIsProcessing(true);
-      
-      // Update message status to playing
-      setMessages(currentMessages => 
-        currentMessages.map(msg => 
-          msg.id === newMessage.id ? { ...msg, status: 'playing' } : msg
-        )
-      );
-      
-      // Play the audio
-      await playMessageAudio(
-        newMessage,
-        apiKey,
-        () => {},
-        () => {
-          // Update message status to completed when done
-          setMessages(currentMessages => 
-            currentMessages.map(msg => 
-              msg.id === newMessage.id ? { ...msg, status: 'completed' } : msg
-            )
-          );
-          setIsProcessing(false);
-        },
-        volume,
-        ttsProvider,
-        selectedVoice
-      );
-      
-    } catch (error) {
-      console.error('Error processing message:', error);
-      
-      toast({
-        title: "Error Playing Message",
-        description: error instanceof Error ? error.message : "Unknown error occurred",
-        variant: "destructive"
-      });
-      
-      // Update message status to error
-      setMessages(currentMessages => 
-        currentMessages.map(msg => 
-          msg.id === newMessage.id ? { ...msg, status: 'error' } : msg
-        )
-      );
-      
-      setIsProcessing(false);
-    }
-  };
+  }, [setSelectedVoice]);
 
   const handleSendMessage = useCallback((content: string, username?: string) => {
     const newMessage: Message = {
@@ -248,9 +135,9 @@ const Index = () => {
       status: 'pending'
     };
     
-    setMessages(prevMessages => [...prevMessages, newMessage]);
-    processMessageQueue(newMessage);
-  }, []);
+    addMessage(newMessage);
+    enqueue(newMessage);
+  }, [addMessage, enqueue]);
 
   return (
     <div className="min-h-screen p-4 md:p-8 bg-stream-bg flex flex-col">
@@ -278,7 +165,7 @@ const Index = () => {
 
         {/* Connection Status Panel */}
         <Suspense fallback={<div className="h-12 mb-4 bg-card/50 backdrop-blur-sm border border-stream-accent/30 rounded-lg animate-pulse"></div>}>
-          <ConnectionStatusPanel connections={chatConnections} />
+          <ConnectionStatusPanel />
         </Suspense>
         
         {/* Main Content - More rectangular shape */}
@@ -317,10 +204,7 @@ const Index = () => {
                 
                 <TabsContent value="connections" className="space-y-4 flex-1 flex flex-col">
                   <div className="flex-1">
-                    <ChatConnections 
-                      connections={chatConnections}
-                      onConnectionChange={setChatConnections}
-                    />
+                    <ChatConnections />
                   </div>
                 </TabsContent>
                 
