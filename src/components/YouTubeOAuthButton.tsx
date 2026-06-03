@@ -4,9 +4,9 @@ import { Youtube, CheckCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { saveYoutubeTokens, hasYoutubeOAuthToken, clearYoutubeOAuthToken, YouTubeTokens } from '@/services/youtubeService';
 import { openExternalAuth, onAuthCallback, isTauriAvailable, AuthCallbackData } from '@/lib/tauri-api';
+import { YOUTUBE_CLIENT_ID, OAUTH_REDIRECT_URI, generateOAuthState, validateOAuthState } from '@/config/security';
 
-const YOUTUBE_CLIENT_ID = '311952405738-1cd4o0irnc5b7maihbm3f68qatns9764.apps.googleusercontent.com';
-const REDIRECT_URI = 'http://localhost:3000/callback';
+
 
 interface YouTubeOAuthButtonProps {
   onAuthChange: (isAuthed: boolean) => void;
@@ -17,9 +17,10 @@ const YouTubeOAuthButton: React.FC<YouTubeOAuthButtonProps> = ({ onAuthChange })
   const [isAuthorized, setIsAuthorized] = React.useState<boolean>(hasYoutubeOAuthToken());
   const [isAuthenticating, setIsAuthenticating] = React.useState<boolean>(false);
   const [authError, setAuthError] = React.useState<string | null>(null);
+  const pendingStateRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
-    const checkToken = () => {
+    const syncTokenState = () => {
       const hasToken = hasYoutubeOAuthToken();
       if (hasToken !== isAuthorized) {
         setIsAuthorized(hasToken);
@@ -27,9 +28,10 @@ const YouTubeOAuthButton: React.FC<YouTubeOAuthButtonProps> = ({ onAuthChange })
       }
     };
 
-    checkToken();
-    const intervalId = setInterval(checkToken, 10000);
-    return () => clearInterval(intervalId);
+    syncTokenState();
+
+    window.addEventListener('storage', syncTokenState);
+    return () => window.removeEventListener('storage', syncTokenState);
   }, [isAuthorized, onAuthChange]);
 
   React.useEffect(() => {
@@ -70,6 +72,19 @@ const YouTubeOAuthButton: React.FC<YouTubeOAuthButtonProps> = ({ onAuthChange })
 
     window.addEventListener('message', (event: MessageEvent) => {
       if (event.data && typeof event.data === 'object') {
+        if (event.data.state && pendingStateRef.current) {
+          if (!validateOAuthState(event.data.state)) {
+            console.error('YouTubeOAuthButton: CSRF state validation failed');
+            setIsAuthenticating(false);
+            toast({
+              title: "Security Error",
+              description: "OAuth state validation failed. Please try again.",
+              variant: "destructive"
+            });
+            return;
+          }
+          pendingStateRef.current = null;
+        }
         handleAuthCallback(event.data as AuthCallbackData);
       }
     });
@@ -106,17 +121,19 @@ const YouTubeOAuthButton: React.FC<YouTubeOAuthButtonProps> = ({ onAuthChange })
     
     const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
     authUrl.searchParams.append('client_id', YOUTUBE_CLIENT_ID);
-    authUrl.searchParams.append('redirect_uri', REDIRECT_URI);
+    authUrl.searchParams.append('redirect_uri', OAUTH_REDIRECT_URI);
     authUrl.searchParams.append('response_type', 'code');
     authUrl.searchParams.append('scope', scopes.join(' '));
     authUrl.searchParams.append('access_type', 'offline');
     authUrl.searchParams.append('prompt', 'consent');
     authUrl.searchParams.append('include_granted_scopes', 'true');
-    authUrl.searchParams.append('state', 'youtube_auth_' + Date.now());
+    const state = generateOAuthState('youtube');
+    pendingStateRef.current = state;
+    authUrl.searchParams.append('state', state);
     
     if (isTauriAvailable()) {
       try {
-        await openExternalAuth(authUrl.toString(), REDIRECT_URI);
+        await openExternalAuth(authUrl.toString(), OAUTH_REDIRECT_URI);
       } catch (error) {
         console.error("Error opening auth URL:", error);
         setIsAuthenticating(false);
