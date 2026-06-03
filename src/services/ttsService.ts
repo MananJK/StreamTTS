@@ -1,5 +1,6 @@
 
 import { Message } from '@/types/message';
+import { TTS_COMMAND_PREFIX } from '@/config/security';
 
 interface TTSRequestOptions {
   text: string;
@@ -174,7 +175,7 @@ export async function playMessageAudio(
 ): Promise<void> {
   try {
     // Extract the actual text without the !г (Russian r) command
-    const textToSpeak = message.content.replace(/^!г\s*/i, '');
+    const textToSpeak = message.content.replace(new RegExp(`^${TTS_COMMAND_PREFIX}\\s*`, 'i'), '');
     
     if (provider === 'browser') {
       // Use browser's built-in speech synthesis (no token limits)
