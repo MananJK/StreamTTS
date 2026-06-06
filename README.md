@@ -39,7 +39,7 @@ npm run tauri:dev
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                   StreamTTS                          │
+│                   StreamTTS                         │
 ├─────────────────────────────────────────────────────┤
 │  Frontend (React + TypeScript + Tailwind)           │
 │    ├── Pages: Login, Index, NotFound                │
@@ -53,7 +53,7 @@ npm run tauri:dev
 │    ├── Twitch EventSub webhook (HMAC verification)  │
 │    └── YouTube PubSubHubbub alerts                  │
 ├─────────────────────────────────────────────────────┤
-│  External Services                                   │
+│  External Services                                  │
 │    ├── Twitch IRC via tmi.js                        │
 │    ├── YouTube Data API v3 (polling)                │
 │    └── TTS: Web Speech API / ElevenLabs             │
