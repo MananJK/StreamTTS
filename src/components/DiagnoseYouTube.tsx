@@ -1,7 +1,7 @@
 import React, { useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
-import { getValidYoutubeToken } from '@/services/youtubeService';
+import { getValidYoutubeToken, fetchYouTubeLiveBroadcasts } from '@/services/youtubeService';
 
 interface DiagnoseYouTubeProps {
   onDiagnosticsComplete?: () => void;
@@ -60,13 +60,9 @@ const DiagnoseYouTube: React.FC<DiagnoseYouTubeProps> = ({ onDiagnosticsComplete
         return;
       }
 
-      const broadcastResponse = await fetch('https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet&broadcastStatus=active', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-
-      if (broadcastResponse.ok) {
-        const broadcastData = await broadcastResponse.json();
-        if (broadcastData.items?.length === 0) {
+      try {
+        const broadcasts = await fetchYouTubeLiveBroadcasts();
+        if (broadcasts.length === 0) {
           toast({
             title: "ℹ️ No Active Streams",
             description: "Start a live stream on YouTube to test chat connection.",
@@ -75,13 +71,13 @@ const DiagnoseYouTube: React.FC<DiagnoseYouTubeProps> = ({ onDiagnosticsComplete
         } else {
           toast({
             title: "✅ Active Broadcasts Found",
-            description: `Found ${broadcastData.items.length} active broadcast(s). Ready to connect!`,
+            description: `Found ${broadcasts.length} active broadcast(s). Ready to connect!`,
           });
         }
-      } else {
+      } catch (error) {
         toast({
           title: "❌ Broadcast Access Failed",
-          description: `HTTP ${broadcastResponse.status}: Cannot access live broadcasts. Check permissions.`,
+          description: error instanceof Error ? error.message : 'Cannot access live broadcasts. Check permissions.',
           variant: "destructive",
           duration: 8000
         });
