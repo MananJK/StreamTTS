@@ -100,12 +100,32 @@ pub fn process_twitch_event(payload: TwitchEventSubPayload) -> Option<AlertPaylo
     }
 }
 
+fn extract_channel_name(xml: &str) -> String {
+    xml.lines()
+        .skip_while(|l| !l.trim().starts_with("<author>"))
+        .skip(1)
+        .find_map(|l| {
+            let trimmed = l.trim();
+            if trimmed.starts_with("<name>") {
+                let name = trimmed.strip_prefix("<name>")?
+                    .strip_suffix("</name>")
+                    .or_else(|| trimmed.strip_prefix("<name>").map(|s| s.trim_end_matches("</name>")))
+                    .unwrap_or("Channel");
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "Channel".to_string())
+}
+
 pub fn process_youtube_alert(xml_content: &str) -> Option<AlertPayload> {
     if xml_content.contains("<yt:videoId>") {
+        let user_name = extract_channel_name(xml_content);
         return Some(AlertPayload {
             platform: "youtube".to_string(),
             alert_type: "live".to_string(),
-            user_name: "Channel".to_string(),
+            user_name,
             message: "A new stream or video is live!".to_string(),
             amount: None,
             currency: None,
