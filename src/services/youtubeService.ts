@@ -432,7 +432,7 @@ export const connectToYouTubeLiveChat = async (
   }
 };
 
-function generateColorFromChannelId(channelId: string): string {
+export function generateColorFromChannelId(channelId: string): string {
   let hash = 0;
   for (let i = 0; i < channelId.length; i++) {
     hash = channelId.charCodeAt(i) + ((hash << 5) - hash);
