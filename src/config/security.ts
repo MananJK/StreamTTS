@@ -1,19 +1,33 @@
-// Centralized security configuration for StreamTTS
+// Centralized configuration for StreamTTS
 // Client IDs must be provided via environment variables
+
+export const TTS_COMMAND_PREFIX = '!г';
 
 const TWITCH_CLIENT_ID_ENV = import.meta.env.VITE_TWITCH_CLIENT_ID;
 const YOUTUBE_CLIENT_ID_ENV = import.meta.env.VITE_YOUTUBE_CLIENT_ID;
 
-if (!TWITCH_CLIENT_ID_ENV) {
-  throw new Error('VITE_TWITCH_CLIENT_ID environment variable is required');
-}
-if (!YOUTUBE_CLIENT_ID_ENV) {
-  throw new Error('VITE_YOUTUBE_CLIENT_ID environment variable is required');
+export const OAUTH_REDIRECT_URI = 'http://localhost:3000/callback';
+
+function assertClientId(label: string, value: string): string {
+  if (!value) {
+    console.error(
+      `[StreamTTS] ${label} is not configured. Set VITE_${label} in .env to enable ${label} authentication.`
+    );
+  }
+  return value;
 }
 
-export const TWITCH_CLIENT_ID = TWITCH_CLIENT_ID_ENV;
-export const YOUTUBE_CLIENT_ID = YOUTUBE_CLIENT_ID_ENV;
-export const OAUTH_REDIRECT_URI = 'http://localhost:3000/callback';
+export const TWITCH_CLIENT_ID = assertClientId(
+  'TWITCH_CLIENT_ID',
+  TWITCH_CLIENT_ID_ENV || '',
+);
+export const YOUTUBE_CLIENT_ID = assertClientId(
+  'YOUTUBE_CLIENT_ID',
+  YOUTUBE_CLIENT_ID_ENV || '',
+);
+
+export const hasTwitchClientId = !!TWITCH_CLIENT_ID;
+export const hasYoutubeClientId = !!YOUTUBE_CLIENT_ID;
 
 const STATE_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
 const STATE_KEY = 'oauth_state_storage';
