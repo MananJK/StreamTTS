@@ -41,5 +41,8 @@ electron-build-fresh/
 *.sw?
 NUL
 
+# Reference / inspiration code — not part of StreamTTS itself
+inspiration/
+
 # Tauri telemetry
 telemetry-id

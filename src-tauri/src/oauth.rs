@@ -127,62 +127,31 @@ impl RateLimiter {
 
 const OAUTH_STATE_EXPIRY_SECS: u64 = 600;
 
-struct OAuthStateManager;
-
-impl OAuthStateManager {
-    #[allow(dead_code)]
-    fn generate_state(state: &str, service: &str) -> String {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        
-        format!("{}_{}_{}", service, state, now)
+fn validate_state(
+    state: &str,
+    states: &HashMap<String, (String, u64)>
+) -> Option<String> {
+    let parts: Vec<&str> = state.split('_').collect();
+    if parts.len() < 3 {
+        return None;
     }
 
-    #[allow(dead_code)]
-    fn validate_state(
-        state: &str, 
-        states: &HashMap<String, (String, u64)>
-    ) -> Option<String> {
-        let parts: Vec<&str> = state.split('_').collect();
-        if parts.len() < 3 {
-            return None;
-        }
-        
-        let service = parts[0];
-        let received_nonce = parts[1];
-        let timestamp_str = parts[2];
-        let timestamp: u64 = timestamp_str.parse().ok()?;
-        
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        
-        if now.saturating_sub(timestamp) > OAUTH_STATE_EXPIRY_SECS {
-            return None;
-        }
-        
-        let key = format!("{}_{}", service, received_nonce);
-        states.get(&key).map(|(s, _t)| s.clone())
+    let service = parts[0];
+    let received_nonce = parts[1];
+    let timestamp_str = parts[2];
+    let timestamp: u64 = timestamp_str.parse().ok()?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    if now.saturating_sub(timestamp) > OAUTH_STATE_EXPIRY_SECS {
+        return None;
     }
 
-    #[allow(dead_code)]
-    async fn store_state(
-        states: &Arc<RwLock<HashMap<String, (String, u64)>>>,
-        service: &str,
-        nonce: String,
-    ) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        
-        let key = format!("{}_{}", service, nonce);
-        let mut states = states.write().await;
-        states.insert(key, (service.to_string(), now));
-    }
+    let key = format!("{}_{}", service, received_nonce);
+    states.get(&key).map(|(s, _t)| s.clone())
 }
 
 /// Verify Twitch EventSub message signature
@@ -219,22 +188,6 @@ fn verify_twitch_signature(headers: &HeaderMap, body: &str) -> bool {
     }
     
     expected.bytes().zip(signature.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
-}
-
-/// Sanitize a string for safe display, stripping HTML and control characters
-#[allow(dead_code)]
-fn sanitize_string(input: &str) -> String {
-    input
-        .chars()
-        .filter(|c| !c.is_control() || *c == ' ')
-        .map(|c| match c {
-            '<' | '>' | '&' | '"' | '\'' => '_',
-            _ => c,
-        })
-        .take(100)
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 /// Check if origin is allowed
@@ -322,7 +275,7 @@ async fn handle_auth_complete(
     
     if let Some(ref state_param) = payload.state {
         let states = state.oauth_states.read().await;
-        if OAuthStateManager::validate_state(state_param, &states).is_none() {
+        if validate_state(state_param, &states).is_none() {
             log::warn!("Invalid OAuth state parameter in auth-complete");
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
                 error: "Invalid or expired OAuth state".to_string(),
@@ -515,7 +468,7 @@ async fn handle_auth_exchange(
 
 async fn handle_auth_refresh(
     headers: HeaderMap,
-    State(_state): State<Arc<OAuthServerState>>,
+    State(state): State<Arc<OAuthServerState>>,
     Json(payload): Json<RefreshTokenRequest>,
 ) -> impl IntoResponse {
     if !is_allowed_origin(&headers) {
@@ -583,6 +536,18 @@ async fn handle_auth_refresh(
     
     log::info!("Successfully refreshed access token");
     
+    let callback = OAuthCallback {
+        token: token_response.access_token.clone(),
+        service: "youtube".to_string(),
+        error: None,
+        refresh_token: token_response.refresh_token.clone(),
+        expires_in: Some(token_response.expires_in),
+    };
+
+    if let Err(e) = state.sender.send(callback) {
+        log::error!("Failed to send OAuth callback for refresh: {}", e);
+    }
+
     Json(TokenResponse {
         access_token: token_response.access_token,
         refresh_token: token_response.refresh_token,

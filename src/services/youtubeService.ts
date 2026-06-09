@@ -272,213 +272,167 @@ export const fetchYouTubeLiveBroadcasts = async (): Promise<any[]> => {
   }
 };
 
+async function fetchLiveChatId(broadcastId: string): Promise<string> {
+  const token = await getValidYoutubeToken();
+  if (!token) throw new Error('Please log in to YouTube first.');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+
+  const response = await fetch(
+    `https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails&id=${broadcastId}`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal }
+  );
+  clearTimeout(timeout);
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
+    if (response.status === 401) { clearYoutubeOAuthToken(); throw new Error('Your YouTube session has expired. Please log in again.'); }
+    if (response.status === 403) throw new Error('Permission denied. Please log out and log back in.');
+    throw new Error('Something went wrong. Please try again.');
+  }
+
+  const data = await response.json();
+  if (!data.items?.length) throw new Error('Stream not found. It may have ended.');
+  if (!data.items[0].snippet.liveChatId) throw new Error('Chat is not available. The stream may have ended.');
+  return data.items[0].snippet.liveChatId;
+}
+
+class YouTubeChatPoller {
+  private liveChatId: string;
+  private onMessage: (message: any) => void;
+  private onError: (error: Error) => void;
+  private nextPageToken: string | null = null;
+  private errorCount = 0;
+  private isConnected = false;
+  private timeoutId: ReturnType<typeof setTimeout> | null = null;
+  private readonly MAX_ERRORS = 3;
+
+  constructor(liveChatId: string, onMessage: (message: any) => void, onError: (error: Error) => void) {
+    this.liveChatId = liveChatId;
+    this.onMessage = onMessage;
+    this.onError = onError;
+  }
+
+  start(): void {
+    this.isConnected = true;
+    this.timeoutId = setTimeout(() => this.poll(), 1000);
+  }
+
+  disconnect(): void {
+    this.isConnected = false;
+    if (this.timeoutId) {
+      clearTimeout(this.timeoutId);
+      this.timeoutId = null;
+    }
+  }
+
+  private async poll(): Promise<void> {
+    if (!this.isConnected) return;
+
+    try {
+      const token = await getValidYoutubeToken();
+      if (!token) throw new Error('YouTube authentication expired. Please log in again.');
+
+      const url = new URL('https://www.googleapis.com/youtube/v3/liveChat/messages');
+      url.searchParams.append('part', 'snippet,authorDetails');
+      url.searchParams.append('liveChatId', this.liveChatId);
+      url.searchParams.append('maxResults', '200');
+      if (this.nextPageToken) url.searchParams.append('pageToken', this.nextPageToken);
+
+      const controller = new AbortController();
+      const fetchTimeout = setTimeout(() => controller.abort(), 20000);
+
+      const response = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+      clearTimeout(fetchTimeout);
+
+      if (!response.ok) {
+        await this.handleApiError(response);
+        return;
+      }
+
+      const data = await response.json();
+      this.nextPageToken = data.nextPageToken;
+      this.errorCount = 0;
+
+      if (data.items?.length > 0) {
+        for (const msg of data.items) {
+          if (msg.snippet?.type === 'textMessageEvent') {
+            this.onMessage({
+              id: msg.id,
+              authorDetails: msg.authorDetails,
+              snippet: msg.snippet,
+              userColor: generateColorFromChannelId(msg.authorDetails.channelId),
+            });
+          }
+        }
+      }
+
+      if (this.isConnected) {
+        const interval = data.pollingIntervalMillis || 10000;
+        this.timeoutId = setTimeout(() => this.poll(), interval);
+      }
+    } catch (error) {
+      await this.handlePollError(error);
+    }
+  }
+
+  private async handleApiError(response: Response): Promise<void> {
+    const errorData = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
+    console.error('YouTube chat API error:', errorData);
+
+    if (response.status === 401) { clearYoutubeOAuthToken(); throw new Error('Your YouTube session has expired. Please log in again.'); }
+    if (response.status === 403) throw new Error('Permission denied. Please log out and log back in.');
+    if (response.status === 429) throw new Error('Too many requests. Wait a moment and try again.');
+    throw new Error('Something went wrong. Please try again.');
+  }
+
+  private async handlePollError(error: unknown): Promise<void> {
+    this.errorCount++;
+    console.error('YouTube chat poll error:', error);
+
+    if (this.errorCount >= this.MAX_ERRORS) {
+      console.error(`YouTube: Too many consecutive errors (${this.errorCount}), stopping polling`);
+      this.onError(error instanceof Error ? error : new Error(String(error)));
+      this.isConnected = false;
+      return;
+    }
+
+    if (this.isConnected) {
+      const delay = Math.min(15000 * this.errorCount, 60000);
+      this.timeoutId = setTimeout(() => this.poll(), delay);
+    }
+  }
+}
+
 export const connectToYouTubeLiveChat = async (
   broadcastId: string,
   onMessage: (message: any) => void,
   onError: (error: Error) => void
 ): Promise<{ disconnect: () => void }> => {
   try {
-    const token = await getValidYoutubeToken();
-    if (!token) {
-      throw new Error('Please log in to YouTube first.');
-    }
-    
-    const broadcastController = new AbortController();
-    const broadcastTimeout = setTimeout(() => {
-      broadcastController.abort();
-    }, 20000);
-    
-    const broadcastResponse = await fetch(
-      `https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails&id=${broadcastId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`
-        },
-        signal: broadcastController.signal
-      }
-    );
-    
-    clearTimeout(broadcastTimeout);
-    
-    if (!broadcastResponse.ok) {
-      let errorData;
-      try {
-        errorData = await broadcastResponse.json();
-      } catch (parseError) {
-        errorData = { error: { message: `HTTP ${broadcastResponse.status}` } };
-      }
-      console.error('YouTube: Broadcast fetch error:', errorData);
-      
-      if (broadcastResponse.status === 401) {
-        clearYoutubeOAuthToken();
-        throw new Error('Your YouTube session has expired. Please log in again.');
-      } else if (broadcastResponse.status === 403) {
-        throw new Error('Permission denied. Please log out and log back in.');
-      }
-      
-      const errorMessage = errorData.error?.message || 'Unknown error';
-      throw new Error('Something went wrong. Please try again.');
-    }
-    
-    const broadcastData = await broadcastResponse.json();
-    
-    if (!broadcastData.items || broadcastData.items.length === 0) {
-      throw new Error('Stream not found. It may have ended.');
-    }
-    
-    const liveChatId = broadcastData.items[0].snippet.liveChatId;
-    if (!liveChatId) {
-      throw new Error('Chat is not available. The stream may have ended.');
-    }
-    
-    let nextPageToken: string | null = null;
-    let timeoutId: NodeJS.Timeout | null = null;
-    let isConnected = true;
-    let errorCount = 0;
-    const MAX_ERRORS = 3;
-    
-    const fetchChatMessages = async () => {
-      if (!isConnected) return;
-      
-      try {
-        const currentToken = await getValidYoutubeToken();
-        if (!currentToken) {
-          throw new Error('YouTube authentication expired. Please log in again.');
-        }
-        
-        const url = new URL('https://www.googleapis.com/youtube/v3/liveChat/messages');
-        url.searchParams.append('part', 'snippet,authorDetails');
-        url.searchParams.append('liveChatId', liveChatId);
-        url.searchParams.append('maxResults', '200');
-        
-        if (nextPageToken) {
-          url.searchParams.append('pageToken', nextPageToken);
-        }
-        
-        const fetchController = new AbortController();
-        const fetchTimeout = setTimeout(() => {
-          fetchController.abort();
-        }, 20000);
-        
-        const response = await fetch(url.toString(), {
-          headers: {
-            Authorization: `Bearer ${currentToken}`
-          },
-          signal: fetchController.signal
-        });
-        
-        clearTimeout(fetchTimeout);
-        
-        if (!response.ok) {
-          let errorData;
-          try {
-            errorData = await response.json();
-          } catch (parseError) {
-            errorData = { error: { message: `HTTP ${response.status}` } };
-          }
-          console.error('YouTube chat API error:', errorData);
-          
-          if (response.status === 401) {
-            clearYoutubeOAuthToken();
-            throw new Error('Your YouTube session has expired. Please log in again.');
-          }
-          
-          if (response.status === 403) {
-            throw new Error('Permission denied. Please log out and log back in.');
-          }
-          
-          if (response.status === 429) {
-            throw new Error('Too many requests. Wait a moment and try again.');
-          }
-          
-          const errorMessage = errorData.error?.message || 'Unknown error';
-          throw new Error('Something went wrong. Please try again.');
-        }
-        
-        const data = await response.json();
-        nextPageToken = data.nextPageToken;
-        
-        errorCount = 0;
-        
-        if (data.items && data.items.length > 0) {
-          data.items.forEach((message: any) => {
-            if (message.snippet.type === 'textMessageEvent') {
-              onMessage({
-                id: message.id,
-                authorDetails: message.authorDetails,
-                snippet: message.snippet,
-                userColor: generateColorFromChannelId(message.authorDetails.channelId)
-              });
-            }
-          });
-        }
-        
-        const pollInterval = data.pollingIntervalMillis || 10000;
-        if (isConnected) {
-          timeoutId = setTimeout(() => {
-            fetchChatMessages().catch(err => {
-              console.error('YouTube: Error in scheduled fetch:', err);
-            });
-          }, pollInterval);
-        }
-      } catch (error) {
-        console.error('Error fetching chat messages:', error);
-        
-        if (error instanceof Error && error.name === 'AbortError') {
-          console.error('YouTube: Request timed out');
-          errorCount++;
-        } else {
-          errorCount++;
-        }
-        
-        if (errorCount >= MAX_ERRORS) {
-          console.error(`YouTube: Too many consecutive errors (${errorCount}), stopping polling`);
-          onError(error as Error);
-          isConnected = false;
-          return;
-        }
-        
-        if (isConnected) {
-          const retryDelay = Math.min(15000 * errorCount, 60000);
-          timeoutId = setTimeout(() => {
-            fetchChatMessages().catch(err => {
-              console.error('YouTube: Error in retry fetch:', err);
-            });
-          }, retryDelay);
-        }
-      }
-    };
-    
-    timeoutId = setTimeout(() => {
-      fetchChatMessages().catch(err => {
-        console.error('YouTube: Error in initial fetch:', err);
-      });
-    }, 1000);
-    
-    return {
-      disconnect: () => {
-        isConnected = false;
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
-        }
-      }
-    };
+    const liveChatId = await fetchLiveChatId(broadcastId);
+    const poller = new YouTubeChatPoller(liveChatId, onMessage, onError);
+    poller.start();
+    return { disconnect: () => poller.disconnect() };
   } catch (error) {
     console.error('Error connecting to YouTube chat:', error);
-    
+
     if (error instanceof Error && error.name === 'AbortError') {
       const timeoutError = new Error('Could not connect to YouTube. Please try again.');
       onError(timeoutError);
       throw timeoutError;
     }
-    
+
     onError(error as Error);
     throw error;
   }
 };
 
-function generateColorFromChannelId(channelId: string): string {
+export function generateColorFromChannelId(channelId: string): string {
   let hash = 0;
   for (let i = 0; i < channelId.length; i++) {
     hash = channelId.charCodeAt(i) + ((hash << 5) - hash);

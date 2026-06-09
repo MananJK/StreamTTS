@@ -121,10 +121,11 @@
         error = queryParams.get('error') || hashParams.get('error');
         
         const state = queryParams.get('state') || hashParams.get('state');
-        if (state && state.startsWith('youtube_auth_')) {
-            service = 'youtube';
-        } else {
-            service = 'twitch';
+        if (state) {
+            const parts = state.split('_');
+            if (parts.length >= 1 && (parts[0] === 'youtube' || parts[0] === 'twitch')) {
+                service = parts[0];
+            }
         }
         
         if (error) {
