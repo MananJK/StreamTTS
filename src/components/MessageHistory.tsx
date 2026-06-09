@@ -3,6 +3,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Card } from '@/components/ui/card';
 import { Volume2, User } from 'lucide-react';
 import { Message } from '@/types/message';
+import { TTS_COMMAND_PREFIX } from '@/config/security';
 
 interface MessageHistoryProps {
   messages: Message[];
@@ -21,8 +22,8 @@ const MessageHistory: React.FC<MessageHistoryProps> = ({ messages }) => {
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
             <Volume2 size={40} className="mb-2 text-stream-accent/50" />
-            <p>No messages yet. Send a Russian message to get started!</p>
-            <p className="mt-2 text-sm">Example: !г Привет, как дела?</p>
+                            <p>No messages yet. Send a Russian message to get started!</p>
+                            <p className="mt-2 text-sm">Example: {TTS_COMMAND_PREFIX} Привет, как дела?</p>
           </div>
         ) : (
           <div className="space-y-4">
@@ -44,7 +45,7 @@ const MessageHistory: React.FC<MessageHistoryProps> = ({ messages }) => {
                     {new Date(message.timestamp).toLocaleTimeString()}
                   </span>
                 </div>
-                <p className="text-sm ml-6">{message.content.replace(/^!г\s*/i, '')}</p>
+                <p className="text-sm ml-6">{message.content.replace(new RegExp(`^${TTS_COMMAND_PREFIX}\\s*`, 'i'), '')}</p>
               </div>
             ))}
             {messages.length > MAX_VISIBLE_MESSAGES && (
