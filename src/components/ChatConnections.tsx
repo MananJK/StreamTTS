@@ -1,859 +1,35 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Twitch, Youtube, X, LogIn, CheckCircle, LogOut, PlugIcon, Power } from 'lucide-react';
-import { ChatConnection, ChatSource } from '@/types/chatSource';
+import { ChatSource } from '@/types/chatSource';
 import { useToast } from '@/hooks/use-toast';
-import { TWITCH_CLIENT_ID, YOUTUBE_CLIENT_ID, OAUTH_REDIRECT_URI, generateOAuthState, validateOAuthState } from '@/config/security';
-import { 
-  connectToTwitchChat, 
-  disconnectFromTwitchChat,
-  hasTwitchOAuthToken,
-  saveTwitchOAuthToken,
-  getTwitchUsername,
-  clearTwitchOAuthToken,
-  isTwitchConnected
-} from '@/services/twitchService';
-import { 
-  connectToYouTubeLiveChat,
-  hasYoutubeOAuthToken,
-  clearYoutubeOAuthToken,
-  fetchYouTubeLiveBroadcasts,
-  checkLiveStreamingEnabled,
-  getValidYoutubeToken,
-  saveYoutubeTokens,
-  YouTubeTokens
-} from '@/services/youtubeService';
-import { Link } from 'react-router-dom';
-import YouTubeOAuthButton from '@/components/YouTubeOAuthButton';
+import { useChatStore } from '@/stores/chatStore';
+import { useAuthStore } from '@/stores/authStore';
+import { useShallow } from 'zustand/react/shallow';
+import { useTwitchConnection } from '@/hooks/useTwitchConnection';
+import { useYoutubeConnection } from '@/hooks/useYoutubeConnection';
+import { useOAuthCallback } from '@/hooks/useOAuthCallback';
+import DiagnoseYouTube from '@/components/DiagnoseYouTube';
 
-interface ChatConnectionsProps {
-  connections: ChatConnection[];
-  onConnectionChange: (connections: ChatConnection[]) => void;
-}
-
-const ChatConnections: React.FC<ChatConnectionsProps> = ({ 
-  connections, 
-  onConnectionChange 
-}) => {
-  const [isTwitchAuthed, setIsTwitchAuthed] = useState(hasTwitchOAuthToken());
-  const [isYoutubeAuthed, setIsYoutubeAuthed] = useState(hasYoutubeOAuthToken());
-  const [isConnectingTwitch, setIsConnectingTwitch] = useState(false);
-  const [isConnectingYoutube, setIsConnectingYoutube] = useState(false);
-  const [isTwitchStreamConnected, setIsTwitchStreamConnected] = useState(false);
-  const [isYoutubeStreamConnected, setIsYoutubeStreamConnected] = useState(false);
+const ChatConnections: React.FC = () => {
   const { toast } = useToast();
-  // Reference to store YouTube disconnect functions
-  const youtubeDisconnectFns = useRef<Record<string, () => void>>({});
-  
-  // Reference to store current connections for callbacks to avoid stale closure
-  const connectionsRef = useRef(connections);
-  
-  // Debounce connection attempts to prevent rapid reconnections
-  const connectionAttempts = useRef<Record<string, number>>({});
-  const lastConnectionAttempt = useRef<Record<string, number>>({});
 
-  useEffect(() => {
-    connectionsRef.current = connections;
-  }, [connections]);
-  
-  useEffect(() => {
-    return () => {
-      Object.values(youtubeDisconnectFns.current).forEach(disconnect => {
-        try {
-          disconnect();
-        } catch (e) {
-          console.error('Error cleaning up YouTube connection:', e);
-        }
-      });
-      youtubeDisconnectFns.current = {};
-    };
-  }, []);
+  const connections = useChatStore(s => s.connections);
 
-  // Add effect to listen for auth callbacks from Electron
-  useEffect(() => {
-    // Create a wrapper function that can be referenced for both adding and removing
-    const messageEventHandler = (event: MessageEvent) => {
-      // Use void to properly handle the promise from the async function
-      void handleAuthCallback(event);
-    };
-    
-    const handleAuthCallback = async (event: MessageEvent) => {
-      const validOrigins = [
-        window.location.origin,
-        'http://localhost:3000',
-        'http://localhost:8080'
-      ];
-      if (!validOrigins.includes(event.origin)) {
-        return;
-      }
+  const { setTwitchAuth, setYoutubeAuth } =
+    useAuthStore(useShallow(s => ({ setTwitchAuth: s.setTwitchAuth, setYoutubeAuth: s.setYoutubeAuth })));
 
-      // Validate CSRF state parameter if present
-      if (event.data && event.data.state && !validateOAuthState(event.data.state)) {
-        console.error('OAuth state validation failed - possible CSRF attack');
-        toast({
-          id: 'oauth-csrf-error',
-          title: "Security Error",
-          description: "OAuth state validation failed. Please try authenticating again.",
-          variant: "destructive"
-        });
-        return;
-      }
-      
-      if (event.data && event.data.type === 'twitch-oauth-callback' && event.data.token) {
-        saveTwitchOAuthToken(event.data.token);
-        setIsTwitchAuthed(true);
-        
-        toast({
-          id: 'twitch-auth-success',
-          title: "Twitch Authentication Successful",
-          description: "You can now connect to your Twitch channel"
-        });
-      }
-      
-      if (event.data && event.data.type === 'youtube-oauth-callback' && event.data.token) {
-        
-        try {
-          if (event.data.refresh_token && event.data.expires_in) {
-            const tokens: YouTubeTokens = {
-              access_token: event.data.token,
-              refresh_token: event.data.refresh_token,
-              expires_at: Date.now() + (event.data.expires_in * 1000),
-            };
-            saveYoutubeTokens(tokens);
-          }
-          
-          const token = await getValidYoutubeToken();
-          
-          if (token) {
-            setIsYoutubeAuthed(true);
-            toast({
-              id: 'youtube-auth-success',
-              title: "YouTube Authentication Successful",
-              description: "You can now connect to your YouTube live stream"
-            });
-            
-            try {
-              const broadcasts = await fetchYouTubeLiveBroadcasts();
-              if (!broadcasts || broadcasts.length === 0) {
-                toast({
-                  id: 'youtube-no-streams',
-                  title: "No Active YouTube Streams",
-                  description: "No active streams found. Start a live stream on YouTube first.",
-                  duration: 5000
-                });
-              } else {
-                toast({
-                  id: 'youtube-streams-found',
-                  title: "YouTube Live Stream Found",
-                  description: `Found ${broadcasts.length} active stream(s). Click 'Connect Stream' to monitor chat.`
-                });
-              }
-            } catch (error) {
-              console.error("Error checking for broadcasts:", error);
-              toast({
-                id: 'youtube-broadcast-error',
-                title: "YouTube Error",
-                description: "Error checking for live streams. Please try again.",
-                variant: "destructive",
-                duration: 5000
-              });
-            }
-          } else {
-            toast({
-              id: 'youtube-permission-issue',
-              title: "YouTube Permission Issue",
-              description: "Authentication succeeded but lacks required permissions for live chat. Please log out and log in again to grant full YouTube access.",
-              variant: "destructive",
-              duration: 8000
-            });
-          }
-        } catch (error) {
-          console.error("Error in YouTube auth callback:", error);
-          toast({
-            id: 'youtube-auth-error',
-            title: "YouTube Authentication Error",
-            description: "There was a problem authenticating with YouTube. Please try again.",
-            variant: "destructive"
-          });
-        }
-      }
-    };
+  const twitch = useTwitchConnection();
+  const youtube = useYoutubeConnection();
 
-    // Listen for auth callbacks
-    window.addEventListener('message', messageEventHandler);
-    
-    // Auto-setup listener for Electron if available
-    if (typeof window.electron !== 'undefined') {
-      window.electron.onAuthCallback((data) => {
-        // Use void to properly handle the promise from the async function
-        void handleAuthCallback(new MessageEvent('message', { data }));
-      });
-    }
-    
-    return () => {
-      window.removeEventListener('message', messageEventHandler);
-    };
-  }, [toast]);
-
-  const validateYouTubeToken = async (_token: string, silent = false) => {
-    try {
-      const token = await getValidYoutubeToken();
-      
-      if (!token) {
-        setIsYoutubeAuthed(false);
-        if (!silent) {
-          toast({
-            title: "YouTube Session Expired",
-            description: "Your YouTube session has expired. Please log in again.",
-            variant: "destructive"
-          });
-        }
-        return false;
-      }
-      
-      const response = await fetch('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        
-        if (!silent) {
-          checkForLiveBroadcasts(token, silent);
-        }
-        return true;
-      } else {
-        const errorText = await response.text();
-        console.error("YouTube token validation failed:", response.status, errorText);
-        
-        if (response.status === 401) {
-          setIsYoutubeAuthed(false);
-          
-          if (!silent) {
-            toast({
-              title: "Session Expired",
-              description: "Your YouTube session has expired. Please log in again.",
-              variant: "destructive",
-              duration: 5000
-            });
-          }
-        } else if (response.status === 403) {
-          if (!silent) {
-            toast({
-              title: "Permission Required",
-              description: "Please log out and log back in to grant chat access.",
-              variant: "destructive",
-              duration: 5000
-            });
-          }
-        } else if (!silent) {
-          toast({
-            title: "Connection Issue",
-            description: "Could not verify your YouTube connection. Please try again.",
-            variant: "destructive",
-            duration: 5000
-          });
-        }
-        
-        return false;
-      }
-    } catch (error) {
-      console.error("Error validating YouTube token:", error);
-      if (!silent) {
-        toast({
-          title: "Connection Issue",
-          description: "Could not connect to YouTube. Check your internet and try again.",
-          variant: "destructive",
-          duration: 5000
-        });
-      }
-      return false;
-    }
-  };
-
-  // Debug function to check for live broadcasts
-  const checkForLiveBroadcasts = async (token: string, silent = false) => {
-    try {
-      const response = await fetch(
-        'https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet&broadcastStatus=active',
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        }
-      );
-      
-      if (response.ok) {
-        const data = await response.json();
-        
-        if (data.items && data.items.length > 0) {
-          if (!silent) {
-            toast({
-              title: "YouTube Live Stream Found",
-              description: `Found ${data.items.length} active live stream(s). Click 'Connect Stream' to monitor chat.`
-            });
-          }
-          return true;
-        } else {
-          // No active broadcasts found
-          if (!silent) {
-            toast({
-              title: "No Active YouTube Streams",
-              description: "No active live streams found. Start a live stream on YouTube first.",
-              duration: 5000
-            });
-          }
-          return false;
-        }
-      } else {
-        const errorText = await response.text();
-        console.error("Failed to fetch live broadcasts:", response.status, errorText);
-        
-        // If permission error, suggest re-authentication
-        if (response.status === 403) {
-          if (!silent) {
-            toast({
-              title: "Permission Required",
-              description: "Please log out and log back in to grant chat access.",
-              variant: "destructive",
-              duration: 5000
-            });
-          }
-        } else if (!silent) {
-          toast({
-            title: "Connection Error",
-            description: "Could not check for live streams. Please try again.",
-            variant: "destructive",
-            duration: 5000
-          });
-        }
-        return false;
-      }
-    } catch (error) {
-      console.error("Error checking for live broadcasts:", error);
-      // Don't show toast for network errors
-      return false;
-    }
-  };
-
-  // Add effect to update connection status based on active connections
-  useEffect(() => {
-    const hasTwitchConnection = connections.some(
-      conn => conn.type === 'twitch' && conn.isConnected
-    );
-    
-    const hasYoutubeConnection = connections.some(
-      conn => conn.type === 'youtube' && conn.isConnected
-    );
-    
-    
-    setIsTwitchStreamConnected(hasTwitchConnection);
-    setIsYoutubeStreamConnected(hasYoutubeConnection);
-  }, [connections]);
-  
-  // Add effect to check authentication on component mount and periodically (less aggressive)
-  useEffect(() => {
-    // Only verify YouTube token on mount if authenticated
-    if (isYoutubeAuthed) {
-      void (async () => {
-        const token = await getValidYoutubeToken();
-        if (token) {
-          validateYouTubeToken(token, true);
-        }
-      })();
-    }
-    
-    // Set up periodic check for YouTube token validity (every 10 minutes, reduced from 5)
-    const intervalId = setInterval(() => {
-      if (isYoutubeAuthed) {
-        void (async () => {
-          const token = await getValidYoutubeToken();
-          if (token) {
-            validateYouTubeToken(token, true);
-          }
-        })();
-      }
-    }, 10 * 60 * 1000);
-    
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [isYoutubeAuthed]);
-
-  const handleConnectToTwitch = async () => {
-    if (!isTwitchAuthed) {
-      toast({
-        title: "Twitch Connection",
-        description: "Please login with Twitch first",
-        variant: "destructive"
-      });
-      return;
-    }
-
-    // Prevent multiple rapid connection attempts
-    if (isConnectingTwitch) {
-      return;
-    }
-
-    setIsConnectingTwitch(true);
-    
-    try {
-      // Get user's Twitch username
-      const username = await getTwitchUsername();
-      if (username) {
-        // Check debounce - prevent connections within 5 seconds of last attempt
-        const lastAttempt = lastConnectionAttempt.current[username] || 0;
-        const timeSinceLastAttempt = Date.now() - lastAttempt;
-        
-        if (timeSinceLastAttempt < 5000) {
-          toast({
-            title: "Please Wait",
-            description: "Please wait a moment before reconnecting",
-            variant: "default"
-          });
-          return;
-        }
-        
-        lastConnectionAttempt.current[username] = Date.now();
-        
-        // Check if we're already connected to this channel
-        const existingConnection = connections.find(
-          conn => conn.type === 'twitch' && conn.channelName.toLowerCase() === username.toLowerCase()
-        );
-        
-        if (!existingConnection) {
-          const connectionId = `twitch-${Date.now()}`;
-          const newConnection: ChatConnection = {
-            id: connectionId,
-            type: 'twitch',
-            channelName: username,
-            isConnected: false
-          };
-
-          // Add to connections list
-          const updatedConnections = [...connections, newConnection];
-          onConnectionChange(updatedConnections);
-
-          // Connect to Twitch chat with improved error handling
-          connectToTwitchChat(
-            username,
-            (username, message) => {
-              // Message handler will be implemented in the parent component
-            },
-            (connected, error) => {
-              // Update connection status with proper state management
-              // Use the ref to get current connections to avoid stale closure
-              const currentConnections = connectionsRef.current;
-              
-              const updatedList = currentConnections.map(conn => 
-                conn.id === connectionId 
-                  ? { ...conn, isConnected: connected, error: error } 
-                  : conn
-              );
-              
-              // Only update if we found the connection
-              const connectionExists = currentConnections.some(conn => conn.id === connectionId);
-              if (connectionExists) {
-                onConnectionChange(updatedList);
-              } else {
-                console.warn(`Connection ${connectionId} not found in current connections`);
-              }
-
-              if (connected) {
-                toast({
-                  title: "Connected to Twitch",
-                  description: `Now listening to ${username}'s chat`
-                });
-              } else if (error && !error.includes('RECONNECT')) {
-                // Don't show toast for reconnection attempts
-                toast({
-                  title: "Twitch Connection Error",
-                  description: error,
-                  variant: "destructive"
-                });
-              }
-            }
-          );
-        } else {
-          toast({
-            title: "Already Connected",
-            description: `You're already connected to ${username}'s chat`
-          });
-        }
-      } else {
-        toast({
-          title: "Twitch Connection",
-          description: "Could not determine your Twitch username",
-          variant: "destructive"
-        });
-      }
-    } catch (error) {
-      console.error("Error connecting to Twitch:", error);
-      toast({
-        title: "Twitch Connection Error",
-        description: error instanceof Error ? error.message : "Unknown error",
-        variant: "destructive"
-      });
-    } finally {
-      setIsConnectingTwitch(false);
-    }
-  };
-
-  const handleDisconnectFromTwitch = async () => {
-    // Disconnect from all Twitch channels
-    const twitchConnections = connections.filter(conn => conn.type === 'twitch');
-    
-    if (twitchConnections.length === 0) {
-      toast({
-        title: "Twitch",
-        description: "No active Twitch connections to disconnect"
-      });
-      return;
-    }
-    
-    
-    try {
-      // Disconnect each connection with proper error handling
-      const disconnectPromises = twitchConnections.map(async (conn) => {
-        try {
-          await disconnectFromTwitchChat(conn.channelName);
-          
-          // Remove from UI immediately after successful disconnect
-          const updatedConnections = connections.filter(c => c.id !== conn.id);
-          onConnectionChange(updatedConnections);
-          
-          return { success: true, channel: conn.channelName };
-        } catch (error) {
-          console.error(`Error disconnecting from ${conn.channelName}:`, error);
-          return { success: false, channel: conn.channelName, error };
-        }
-      });
-      
-      // Wait for all disconnections to complete
-      const results = await Promise.allSettled(disconnectPromises);
-      
-      // Update state
-      setIsTwitchStreamConnected(false);
-      
-      // Report results
-      const successful = results.filter(r => r.status === 'fulfilled').length;
-      const failed = results.filter(r => r.status === 'rejected').length;
-      
-      if (failed === 0) {
-        toast({
-          title: "Twitch Disconnected",
-          description: `Successfully disconnected from all ${successful} Twitch channel(s)`
-        });
-      } else {
-        toast({
-          title: "Twitch Disconnection",
-          description: `Disconnected from ${successful} channel(s), ${failed} had issues but were removed from the list`,
-          variant: "destructive"
-        });
-      }
-    } catch (error) {
-      console.error("Error in handleDisconnectFromTwitch:", error);
-      
-      // Force update state even if there were errors
-      setIsTwitchStreamConnected(false);
-      
-      // Remove all Twitch connections from UI as fallback
-      const updatedConnections = connections.filter(conn => conn.type !== 'twitch');
-      onConnectionChange(updatedConnections);
-      
-      toast({
-        title: "Twitch Disconnection",
-        description: "Disconnection completed with some issues, but all channels have been removed",
-        variant: "destructive"
-      });
-    }
-  };
-
-  const handleConnectToYoutube = async () => {
-    if (!isYoutubeAuthed) {
-      toast({
-        title: "YouTube Connection",
-        description: "Please login with YouTube first",
-        variant: "destructive"
-      });
-      return;
-    }
-
-    // Prevent multiple simultaneous connection attempts
-    if (isConnectingYoutube) {
-      return;
-    }
-
-    setIsConnectingYoutube(true);
-    
-    try {
-      
-      // Get active YouTube broadcasts with comprehensive error handling
-      let broadcasts: any[] = [];
-      try {
-        broadcasts = await fetchYouTubeLiveBroadcasts();
-      } catch (broadcastFetchError) {
-        console.error("Failed to fetch YouTube broadcasts:", broadcastFetchError);
-        
-        // Handle specific broadcast fetch errors
-        if (broadcastFetchError instanceof Error) {
-          let errorTitle = "Connection Error";
-          const errorDescription = broadcastFetchError.message;
-          
-          if (broadcastFetchError.message.includes('Permission denied') || 
-              broadcastFetchError.message.includes('log out and log back in')) {
-            errorTitle = "Permission Required";
-          } else if (broadcastFetchError.message.includes('Could not connect') || 
-                     broadcastFetchError.message.includes('internet')) {
-            errorTitle = "Connection Problem";
-          } else if (broadcastFetchError.message.includes('session has expired') || 
-                     broadcastFetchError.message.includes('log in again')) {
-            errorTitle = "Session Expired";
-          } else if (broadcastFetchError.message.includes('daily limit')) {
-            errorTitle = "Limit Reached";
-          }
-          
-          toast({
-            title: errorTitle,
-            description: errorDescription,
-            variant: "destructive",
-            duration: 5000
-          });
-        } else {
-          toast({
-            title: "Connection Error",
-            description: "Something went wrong. Please try again.",
-            variant: "destructive",
-            duration: 5000
-          });
-        }
-        return; // Exit early if we can't fetch broadcasts
-      }
-      
-      if (broadcasts.length > 0) {
-        // Connect to the first active broadcast
-        const broadcastId = broadcasts[0].id;
-        const broadcastTitle = broadcasts[0].snippet?.title || 'Unknown';
-        
-        
-        // Check if we're already connected to this broadcast
-        const existingConnection = connections.find(
-          conn => conn.type === 'youtube' && conn.channelName === broadcastTitle
-        );
-        
-        if (!existingConnection) {
-          const connectionId = `youtube-${Date.now()}`;
-          const newConnection: ChatConnection = {
-            id: connectionId,
-            type: 'youtube',
-            channelName: broadcastTitle || broadcastId,
-            isConnected: false
-          };
-
-          // Add to connections list
-          const updatedConnections = [...connections, newConnection];
-          onConnectionChange(updatedConnections);
-
-          // Connect to YouTube chat with timeout protection
-          try {
-            const { disconnect } = await connectToYouTubeLiveChat(
-              broadcastId,
-              (message) => {
-              },
-              (error) => {
-                console.error("YouTube chat connection error:", error);
-                
-                // Update connection status with error using current connections ref
-                const currentConnections = connectionsRef.current;
-                const updatedList = currentConnections.map(conn => 
-                  conn.id === connectionId 
-                    ? { ...conn, isConnected: false, error: error.message } 
-                    : conn
-                );
-                onConnectionChange(updatedList);
-                setIsYoutubeStreamConnected(false);
-
-                toast({
-                  title: "Connection Error",
-                  description: error.message || "Could not connect to YouTube chat.",
-                  variant: "destructive",
-                  duration: 5000
-                });
-              }
-            );
-
-            
-            // Store the disconnect function for later use
-            youtubeDisconnectFns.current[connectionId] = disconnect;
-            
-            // Update connection status on successful connection using current connections ref
-            const currentConnections = connectionsRef.current;
-            const updatedList = currentConnections.map(conn => 
-              conn.id === connectionId 
-                ? { ...conn, isConnected: true, error: undefined } 
-                : conn
-            );
-            onConnectionChange(updatedList);
-            setIsYoutubeStreamConnected(true);
-            
-            toast({
-              title: "Connected to YouTube",
-              description: `Now listening to live chat for: ${broadcastTitle}`
-            });
-          } catch (connectionError) {
-            console.error("Error establishing YouTube chat connection:", connectionError);
-            
-            // Remove the connection from the list on error using current connections ref
-            const currentConnections = connectionsRef.current;
-            const updatedList = currentConnections.filter(conn => conn.id !== connectionId);
-            onConnectionChange(updatedList);
-            
-            // Show user-friendly error message
-            if (connectionError instanceof Error) {
-              toast({
-                title: "Connection Error",
-                description: connectionError.message,
-                variant: "destructive",
-                duration: 5000
-              });
-            }
-          }
-        } else {
-          toast({
-            title: "Already Connected",
-            description: "You're already connected to this YouTube live stream"
-          });
-        }
-      } else {
-        
-        toast({
-          title: "No Active Streams",
-          description: "Start a live stream on YouTube, then try again.",
-          variant: "destructive",
-          duration: 5000
-        });
-      }
-    } catch (error) {
-      console.error("Unexpected error in handleConnectToYoutube:", error);
-      
-      let errorMessage = "Something went wrong. Please try again.";
-      if (error instanceof Error) {
-        errorMessage = error.message;
-      }
-      
-      toast({
-        title: "Connection Error",
-        description: errorMessage,
-        variant: "destructive",
-        duration: 5000
-      });
-    } finally {
-      setIsConnectingYoutube(false);
-    }
-  };
-
-  const handleDisconnectFromYoutube = () => {
-    // Disconnect from all YouTube channels
-    const youtubeConnections = connections.filter(conn => conn.type === 'youtube');
-    
-    if (youtubeConnections.length === 0) {
-      toast({
-        title: "YouTube",
-        description: "No active YouTube connections to disconnect"
-      });
-      return;
-    }
-    
-    // Disconnect each connection
-    youtubeConnections.forEach(conn => {
-      disconnectChat(conn);
-    });
-    
-    setIsYoutubeStreamConnected(false);
-    
-    toast({
-      title: "YouTube Disconnected",
-      description: "Successfully disconnected from all YouTube live streams"
-    });
-  };
-
-  const disconnectChat = async (connection: ChatConnection) => {
-    // First remove from connections list to update UI immediately
-    const updatedConnections = connections.filter(conn => conn.id !== connection.id);
-    onConnectionChange(updatedConnections);
-    
-    try {
-      if (connection.type === 'twitch') {
-        await disconnectFromTwitchChat(connection.channelName);
-      } else if (connection.type === 'youtube') {
-        // Call the stored disconnect function for this specific connection
-        const disconnect = youtubeDisconnectFns.current[connection.id];
-        if (disconnect) {
-          disconnect();
-          // Remove the disconnect function from storage
-          delete youtubeDisconnectFns.current[connection.id];
-        }
-      }
-      
-      toast({
-        title: `Disconnected from ${connection.type === 'twitch' ? 'Twitch' : 'YouTube'}`,
-        description: `No longer listening to ${connection.channelName}'s chat`
-      });
-    } catch (error) {
-      console.error(`Error disconnecting from ${connection.channelName}:`, error);
-      
-      toast({
-        title: "Warning",
-        description: `Had trouble disconnecting from ${connection.channelName}, but it's been removed from the list`,
-        variant: "destructive"
-      });
-    }
-  };
-
-  const handleTwitchLogout = async () => {
-    // Disconnect from all Twitch channels
-    const twitchConnections = connections.filter(conn => conn.type === 'twitch');
-    
-    try {
-      // Disconnect from all Twitch connections
-      for (const conn of twitchConnections) {
-        await disconnectChat(conn);
-      }
-    } catch (error) {
-      console.error("Error during Twitch logout:", error);
-    }
-    
-    // Clear token and update state
-    clearTwitchOAuthToken();
-    setIsTwitchAuthed(false);
-    setIsTwitchStreamConnected(false);
-    
-    toast({
-      title: "Twitch Disconnected",
-      description: "You've been logged out of Twitch"
-    });
-  };
-  
-  const handleYoutubeLogout = () => {
-    // Disconnect from all YouTube channels
-    connections
-      .filter(conn => conn.type === 'youtube')
-      .forEach(conn => disconnectChat(conn));
-    
-    // Clear token and update state
-    clearYoutubeOAuthToken();
-    setIsYoutubeAuthed(false);
-    setIsYoutubeStreamConnected(false);
-    
-    toast({
-      title: "YouTube Disconnected",
-      description: "You've been logged out of YouTube"
-    });
-  };
+  useOAuthCallback({
+    onTwitchAuth: useCallback(() => setTwitchAuth(true), [setTwitchAuth]),
+    onYoutubeAuth: useCallback(() => setYoutubeAuth(true), [setYoutubeAuth]),
+    onYoutubeBroadcastsCheck: useCallback(async () => {}, []),
+    toast,
+  });
 
   const getSourceIcon = (source: ChatSource) => {
     switch (source) {
@@ -866,308 +42,6 @@ const ChatConnections: React.FC<ChatConnectionsProps> = ({
     }
   };
 
-  // Handle Twitch OAuth login
-  const handleTwitchAuth = () => {
-    // Twitch OAuth implicit flow
-    const scopes = ['chat:read', 'chat:edit'];
-    const authUrl = new URL('https://id.twitch.tv/oauth2/authorize');
-    authUrl.searchParams.append('client_id', TWITCH_CLIENT_ID);
-    authUrl.searchParams.append('redirect_uri', OAUTH_REDIRECT_URI);
-    authUrl.searchParams.append('response_type', 'token');
-    authUrl.searchParams.append('scope', scopes.join(' '));
-    authUrl.searchParams.append('force_verify', 'true');
-    authUrl.searchParams.append('state', generateOAuthState('twitch'));
-    
-    const fullAuthUrl = authUrl.toString();
-    
-    toast({
-      title: "Twitch Authentication",
-      description: "Opening Twitch login in your browser..."
-    });
-    
-    // Check if we're running in Electron
-    if (typeof window !== 'undefined' && (window as any).electron) {
-      try {
-        (window as any).electron.openExternalAuth(fullAuthUrl, OAUTH_REDIRECT_URI);
-      } catch (error) {
-        console.error("Error opening Twitch auth URL:", error);
-        toast({
-          title: "Authentication Error",
-          description: "Failed to open Twitch authentication page",
-          variant: "destructive"
-        });
-      }
-    } else {
-      // Fallback: Traditional web flow - open in new window
-      const authWindow = window.open(
-        fullAuthUrl,
-        'twitch_auth',
-        'width=500,height=700,scrollbars=yes,resizable=yes'
-      );
-      
-      if (!authWindow) {
-        toast({
-          title: "Popup Blocked",
-          description: "Please allow popups and try again.",
-          variant: "destructive"
-        });
-        return;
-      }
-      
-      // For web version, we would need to handle the auth callback differently
-      // This is a simplified version - in production you'd want to handle the callback properly
-      toast({
-        title: "Web Authentication",
-        description: "Complete the authentication in the popup window. The popup should close automatically when done.",
-        duration: 10000
-      });
-    }
-  };
-
-  // Handle YouTube OAuth login
-  const handleYouTubeAuth = () => {
-    // YouTube OAuth flow with full permissions for chat and broadcasts
-    const scopes = [
-      'https://www.googleapis.com/auth/youtube.readonly',
-      'https://www.googleapis.com/auth/youtube.force-ssl',
-      'https://www.googleapis.com/auth/youtube',
-      'https://www.googleapis.com/auth/youtube.upload'
-    ];
-    
-    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    authUrl.searchParams.append('client_id', YOUTUBE_CLIENT_ID);
-    authUrl.searchParams.append('redirect_uri', OAUTH_REDIRECT_URI);
-    authUrl.searchParams.append('response_type', 'token');
-    authUrl.searchParams.append('scope', scopes.join(' '));
-    authUrl.searchParams.append('prompt', 'consent');
-    authUrl.searchParams.append('include_granted_scopes', 'true');
-    authUrl.searchParams.append('state', generateOAuthState('youtube'));
-    
-    const fullAuthUrl = authUrl.toString();
-    
-    toast({
-      title: "YouTube Authentication",
-      description: "Opening YouTube login in your browser..."
-    });
-    
-    // Check if we're running in Electron
-    if (typeof window !== 'undefined' && (window as any).electron) {
-      try {
-        (window as any).electron.openExternalAuth(fullAuthUrl, OAUTH_REDIRECT_URI);
-      } catch (error) {
-        console.error("Error opening YouTube auth URL:", error);
-        toast({
-          title: "Authentication Error",
-          description: "Failed to open YouTube authentication page",
-          variant: "destructive"
-        });
-      }
-    } else {
-      // Fallback: Traditional web flow - open in new window
-      const authWindow = window.open(
-        fullAuthUrl,
-        'youtube_auth',
-        'width=500,height=700,scrollbars=yes,resizable=yes'
-      );
-      
-      if (!authWindow) {
-        toast({
-          title: "Popup Blocked",
-          description: "Please allow popups and try again.",
-          variant: "destructive"
-        });
-        return;
-      }
-      
-      toast({
-        title: "Web Authentication",
-        description: "Complete the authentication in the popup window. The popup should close automatically when done.",
-        duration: 10000
-      });
-    }
-  };
-
-  // Diagnostic function to help troubleshoot YouTube issues
-  const diagnoseYouTubeIssues = async () => {
-    
-    const token = await getValidYoutubeToken();
-    if (!token) {
-      toast({
-        title: "Not Logged In",
-        description: "Please log in to YouTube first.",
-        variant: "destructive",
-        duration: 5000
-      });
-      return;
-    }
-    
-    
-    try {
-      // Test 1: Basic API access
-      const channelResponse = await fetch('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
-      if (channelResponse.ok) {
-        const channelData = await channelResponse.json();
-        
-        toast({
-          title: "✅ Connected",
-          description: `Connected to channel: ${channelData.items?.[0]?.snippet?.title || 'Unknown'}`,
-          duration: 5000
-        });
-      } else {
-        // Provide specific guidance based on error
-        if (channelResponse.status === 403) {
-          toast({
-            title: "❌ Permission Denied",
-            description: "Enable live streaming in YouTube Studio and log in again.",
-            variant: "destructive",
-            duration: 5000
-          });
-        } else if (channelResponse.status === 401) {
-          toast({
-            title: "❌ Session Expired",
-            description: "Please log in again.",
-            variant: "destructive",
-            duration: 5000
-          });
-        } else if (channelResponse.status === 429) {
-          toast({
-            title: "❌ Limit Reached",
-            description: "Too many requests. Wait a moment and try again.",
-            variant: "destructive",
-            duration: 5000
-          });
-        }
-        return;
-      }
-      
-      // Test 2: Check live streaming capability
-      try {
-        const liveStreamCheck = await checkLiveStreamingEnabled();
-        if (liveStreamCheck.enabled) {
-          toast({
-            title: "✅ Live Streaming Ready",
-            description: "Your channel can create live streams.",
-            duration: 5000
-          });
-        } else {
-          toast({
-            title: "❌ Live Streaming Disabled",
-            description: "Enable live streaming in YouTube Studio.",
-            variant: "destructive",
-            duration: 5000
-          });
-        }
-      } catch (liveStreamError) {
-        toast({
-          title: "⚠️ Check Failed",
-          description: "Could not verify live streaming status.",
-          variant: "destructive",
-          duration: 5000
-        });
-      }
-      
-      // Test 3: Live broadcasts access
-      const broadcastResponse = await fetch('https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet&broadcastStatus=active', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
-      if (broadcastResponse.ok) {
-        const broadcastData = await broadcastResponse.json();
-        
-        if (broadcastData.items?.length === 0) {
-          toast({
-            title: "ℹ️ No Active Streams",
-            description: "Start a live stream on YouTube to test chat connection.",
-            duration: 6000
-          });
-        } else {
-          toast({
-            title: "✅ Active Broadcasts Found",
-            description: `Found ${broadcastData.items.length} active broadcast(s). Ready to connect!`,
-          });
-        }
-      } else {
-        const errorText = await broadcastResponse.text();
-        
-        toast({
-          title: "❌ Broadcast Access Failed",
-          description: `HTTP ${broadcastResponse.status}: Cannot access live broadcasts. Check permissions.`,
-          variant: "destructive",
-          duration: 8000
-        });
-      }
-      
-      toast({
-        title: "YouTube Diagnostic Complete",
-        description: "Check the browser console (F12) for detailed results.",
-        duration: 5000
-      });
-      
-    } catch (error) {
-      console.error("Diagnostic error:", error);
-      toast({
-        title: "Diagnostic Error",
-        description: `Failed to run diagnostics: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        variant: "destructive",
-        duration: 8000
-      });
-    }
-  };
-
-  const resetYouTubeAuth = () => {
-    clearYoutubeOAuthToken();
-    setIsYoutubeAuthed(false);
-    toast({
-      title: "YouTube Authentication Reset",
-      description: "Please log in again to reconnect YouTube.",
-    });
-  };
-
-  const handleDisconnect = async (connectionId: string) => {
-    const connection = connections.find(conn => conn.id === connectionId);
-    if (!connection) {
-      console.warn(`Connection with ID ${connectionId} not found`);
-      return;
-    }
-
-    // Remove from connections list to update UI immediately
-    const updatedConnections = connections.filter(conn => conn.id !== connectionId);
-    onConnectionChange(updatedConnections);
-    
-    try {
-      
-      if (connection.type === 'twitch') {
-        await disconnectFromTwitchChat(connection.channelName);
-      } else if (connection.type === 'youtube') {
-        // Call the stored disconnect function for this specific connection
-        const disconnect = youtubeDisconnectFns.current[connection.id];
-        if (disconnect) {
-          disconnect();
-          // Remove the disconnect function from storage
-          delete youtubeDisconnectFns.current[connection.id];
-        } else {
-          console.warn(`No disconnect function found for YouTube connection: ${connection.id}`);
-        }
-      }
-      
-      toast({
-        title: `Disconnected from ${connection.type === 'twitch' ? 'Twitch' : 'YouTube'}`,
-        description: `No longer listening to ${connection.channelName}'s chat`
-      });
-    } catch (error) {
-      console.error(`Error disconnecting from ${connection.channelName}:`, error);
-      
-      toast({
-        title: "Warning",
-        description: `Had trouble disconnecting from ${connection.channelName}, but it's been removed from the list`,
-        variant: "destructive"
-      });
-    }
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -1177,13 +51,12 @@ const ChatConnections: React.FC<ChatConnectionsProps> = ({
         </Badge>
       </div>
 
-      {/* Twitch Section */}
       <Card className="border-purple-500/30">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Twitch className="h-5 w-5 text-purple-500" />
             Twitch
-            {isTwitchAuthed && (
+            {twitch.isTwitchAuthed && (
               <Badge variant="outline" className="bg-green-500/20 text-green-400 border-green-500/50">
                 <CheckCircle className="h-3 w-3 mr-1" />
                 Authenticated
@@ -1193,60 +66,44 @@ const ChatConnections: React.FC<ChatConnectionsProps> = ({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            {!isTwitchAuthed ? (
-              <Button 
-                onClick={handleTwitchAuth}
-                className="bg-purple-600 hover:bg-purple-700"
-              >
+            {!twitch.isTwitchAuthed ? (
+              <Button onClick={twitch.startAuth} className="bg-purple-600 hover:bg-purple-700">
                 <LogIn className="h-4 w-4 mr-2" />
                 Login with Twitch
               </Button>
             ) : (
               <div className="flex gap-2">
-                <Button
-                  onClick={handleConnectToTwitch}
-                  disabled={isConnectingTwitch || isTwitchStreamConnected}
-                  className="bg-purple-600 hover:bg-purple-700"
-                >
+                <Button onClick={twitch.connect} disabled={twitch.isConnecting || twitch.isConnected} className="bg-purple-600 hover:bg-purple-700">
                   <PlugIcon className="h-4 w-4 mr-2" />
-                  {isConnectingTwitch ? 'Connecting...' : isTwitchStreamConnected ? 'Connected to Stream' : 'Connect to Stream'}
+                  {twitch.isConnecting ? 'Connecting...' : twitch.isConnected ? 'Connected to Stream' : 'Connect to Stream'}
                 </Button>
-                {isTwitchStreamConnected && (
-                  <Button
-                    onClick={handleDisconnectFromTwitch}
-                    variant="outline"
-                    className="border-red-500/50 text-red-400 hover:bg-red-500/20"
-                  >
+                {twitch.isConnected && (
+                  <Button onClick={twitch.disconnectAll} variant="outline" className="border-red-500/50 text-red-400 hover:bg-red-500/20">
                     <Power className="h-4 w-4 mr-2" />
                     Disconnect
                   </Button>
                 )}
-                <Button
-                  onClick={handleTwitchLogout}
-                  variant="outline"
-                  className="border-gray-500/50 text-gray-400 hover:bg-gray-500/20"
-                >
+                <Button onClick={twitch.handleLogout} variant="outline" className="border-gray-500/50 text-gray-400 hover:bg-gray-500/20">
                   <LogOut className="h-4 w-4 mr-2" />
                   Logout
                 </Button>
               </div>
             )}
           </div>
-          
+
           {connections.filter(c => c.type === 'twitch').map(connection => (
             <div key={connection.id} className="flex items-center justify-between p-3 border rounded-lg">
               <div className="flex items-center gap-2">
                 <Twitch className="h-4 w-4 text-purple-500" />
                 <span className="font-medium">{connection.channelName}</span>
                 <Badge variant={connection.isConnected ? 'default' : 'secondary'}>
-                  {connection.isConnected ? 'Connected' : 'Disconnected'}
+                  {connection.status === 'connecting' ? 'Connecting...' :
+                   connection.status === 'connected' ? 'Connected' :
+                   connection.status === 'error' ? 'Error' :
+                   connection.status === 'reconnecting' ? 'Reconnecting...' : 'Disconnected'}
                 </Badge>
               </div>
-              <Button
-                onClick={() => handleDisconnect(connection.id)}
-                variant="ghost"
-                size="sm"
-              >
+              <Button onClick={() => twitch.disconnectById(connection.id)} variant="ghost" size="sm">
                 <X className="h-4 w-4" />
               </Button>
             </div>
@@ -1254,13 +111,12 @@ const ChatConnections: React.FC<ChatConnectionsProps> = ({
         </CardContent>
       </Card>
 
-      {/* YouTube Section */}
       <Card className="border-red-500/30">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Youtube className="h-5 w-5 text-red-500" />
             YouTube
-            {isYoutubeAuthed && (
+            {youtube.isYoutubeAuthed && (
               <Badge variant="outline" className="bg-green-500/20 text-green-400 border-green-500/50">
                 <CheckCircle className="h-3 w-3 mr-1" />
                 Authenticated
@@ -1270,76 +126,48 @@ const ChatConnections: React.FC<ChatConnectionsProps> = ({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            {!isYoutubeAuthed ? (
-              <YouTubeOAuthButton onAuthChange={(isAuthed) => {
-                if (isAuthed) {
-                  setIsYoutubeAuthed(true);
-                  toast({
-                    title: "YouTube Authentication Successful",
-                    description: "You can now connect to your YouTube live stream"
-                  });
-                }
-              }} />
+            {!youtube.isYoutubeAuthed ? (
+              <Button onClick={youtube.startAuth} className="bg-red-600 hover:bg-red-700">
+                <LogIn className="h-4 w-4 mr-2" />
+                Login with YouTube
+              </Button>
             ) : (
               <div className="flex gap-2">
-                <Button
-                  onClick={handleConnectToYoutube}
-                  disabled={isConnectingYoutube || isYoutubeStreamConnected}
-                  className="bg-red-600 hover:bg-red-700"
-                >
+                <Button onClick={youtube.connect} disabled={youtube.isConnecting || youtube.isConnected} className="bg-red-600 hover:bg-red-700">
                   <PlugIcon className="h-4 w-4 mr-2" />
-                  {isConnectingYoutube ? 'Connecting...' : isYoutubeStreamConnected ? 'Connected to Live Chat' : 'Connect to Live Chat'}
+                  {youtube.isConnecting ? 'Connecting...' : youtube.isConnected ? 'Connected to Live Chat' : 'Connect to Live Chat'}
                 </Button>
-                {isYoutubeStreamConnected && (
-                  <Button
-                    onClick={handleDisconnectFromYoutube}
-                    variant="outline"
-                    className="border-red-500/50 text-red-400 hover:bg-red-500/20"
-                  >
+                {youtube.isConnected && (
+                  <Button onClick={youtube.disconnectAll} variant="outline" className="border-red-500/50 text-red-400 hover:bg-red-500/20">
                     <Power className="h-4 w-4 mr-2" />
                     Disconnect
                   </Button>
                 )}
-                <Button
-                  onClick={handleYoutubeLogout}
-                  variant="outline"
-                  className="border-gray-500/50 text-gray-400 hover:bg-gray-500/20"
-                >
+                <Button onClick={youtube.handleLogout} variant="outline" className="border-gray-500/50 text-gray-400 hover:bg-gray-500/20">
                   <LogOut className="h-4 w-4 mr-2" />
                   Logout
                 </Button>
-                <Button
-                  onClick={diagnoseYouTubeIssues}
-                  variant="outline"
-                  className="border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/20"
-                >
-                  🔍 Diagnose
-                </Button>
-                <Button
-                  onClick={resetYouTubeAuth}
-                  variant="outline"
-                  className="border-gray-500/50 text-gray-400 hover:bg-gray-500/20"
-                >
+                <DiagnoseYouTube />
+                <Button onClick={youtube.resetAuth} variant="outline" className="border-gray-500/50 text-gray-400 hover:bg-gray-500/20">
                   Reset Auth
                 </Button>
               </div>
             )}
           </div>
-          
+
           {connections.filter(c => c.type === 'youtube').map(connection => (
             <div key={connection.id} className="flex items-center justify-between p-3 border rounded-lg">
               <div className="flex items-center gap-2">
                 <Youtube className="h-4 w-4 text-red-500" />
                 <span className="font-medium">{connection.channelName}</span>
                 <Badge variant={connection.isConnected ? 'default' : 'secondary'}>
-                  {connection.isConnected ? 'Connected' : 'Disconnected'}
+                  {connection.status === 'connecting' ? 'Connecting...' :
+                   connection.status === 'connected' ? 'Connected' :
+                   connection.status === 'error' ? 'Error' :
+                   connection.status === 'reconnecting' ? 'Reconnecting...' : 'Disconnected'}
                 </Badge>
               </div>
-              <Button
-                onClick={() => handleDisconnect(connection.id)}
-                variant="ghost"
-                size="sm"
-              >
+              <Button onClick={() => youtube.disconnectById(connection.id)} variant="ghost" size="sm">
                 <X className="h-4 w-4" />
               </Button>
             </div>

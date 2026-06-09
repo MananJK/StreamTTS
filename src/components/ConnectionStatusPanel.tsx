@@ -1,18 +1,13 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
-import { Twitch, Youtube, CheckCircle, XCircle } from 'lucide-react';
-import { hasTwitchOAuthToken } from '@/services/twitchService';
-import { hasYoutubeOAuthToken } from '@/services/youtubeService';
-import { ChatConnection } from '@/types/chatSource';
+import { Twitch, Youtube, CheckCircle } from 'lucide-react';
+import { useAuthStore } from '@/stores/authStore';
+import { useChatStore } from '@/stores/chatStore';
 
-interface ConnectionStatusPanelProps {
-  connections: ChatConnection[];
-}
-
-const ConnectionStatusPanel: React.FC<ConnectionStatusPanelProps> = ({ connections }) => {
-  const isTwitchAuthed = useMemo(() => hasTwitchOAuthToken(), []);
-  const isYoutubeAuthed = useMemo(() => hasYoutubeOAuthToken(), []);
+const ConnectionStatusPanel: React.FC = () => {
+  const { isTwitchAuthed, isYoutubeAuthed } = useAuthStore();
+  const connections = useChatStore((state) => state.connections);
   
   // Count active connections by type
   const twitchConnections = connections.filter(conn => conn.type === 'twitch' && conn.isConnected);

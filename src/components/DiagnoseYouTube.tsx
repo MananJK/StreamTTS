@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { getValidYoutubeToken } from '@/services/youtubeService';
 
+
 interface DiagnoseYouTubeProps {
   onDiagnosticsComplete?: () => void;
 }
@@ -60,6 +61,7 @@ const DiagnoseYouTube: React.FC<DiagnoseYouTubeProps> = ({ onDiagnosticsComplete
         return;
       }
 
+
       const broadcastResponse = await fetch('https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet&broadcastStatus=active', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -75,6 +77,7 @@ const DiagnoseYouTube: React.FC<DiagnoseYouTubeProps> = ({ onDiagnosticsComplete
         } else {
           toast({
             title: "✅ Active Broadcasts Found",
+
             description: `Found ${broadcastData.items.length} active broadcast(s). Ready to connect!`,
           });
         }
@@ -82,6 +85,7 @@ const DiagnoseYouTube: React.FC<DiagnoseYouTubeProps> = ({ onDiagnosticsComplete
         toast({
           title: "❌ Broadcast Access Failed",
           description: `HTTP ${broadcastResponse.status}: Cannot access live broadcasts. Check permissions.`,
+
           variant: "destructive",
           duration: 8000
         });
